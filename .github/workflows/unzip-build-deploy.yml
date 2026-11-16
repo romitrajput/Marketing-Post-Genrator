@@ -1,0 +1,62 @@
+name: Unzip, build & deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract any uploaded .zip into the repo
+        run: |
+          shopt -s nullglob
+          zips=(*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then echo "No zip to extract"; exit 0; fi
+          for z in "${zips[@]}"; do
+            rm -rf /tmp/x && mkdir -p /tmp/x
+            unzip -q "$z" -d /tmp/x
+            rm -rf /tmp/x/__MACOSX
+            src=/tmp/x
+            entries=(/tmp/x/*)
+            if [ ${#entries[@]} -eq 1 ] && [ -d "${entries[0]}" ]; then src="${entries[0]}"; fi
+            rsync -a --exclude '.github' --exclude 'node_modules' "$src"/ ./
+            rm -f "$z"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Extract uploaded zip" || echo "Nothing to commit"
+          git push
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+      - run: npm run fetch-ocr-lang || echo "OCR model will load from CDN"
+      - run: npx vite build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.d.outputs.page_url }}
+    steps:
+      - id: d
+        uses: actions/deploy-pages@v4
